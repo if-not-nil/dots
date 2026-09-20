@@ -42,7 +42,7 @@ vim.o.shiftwidth = 2
 vim.o.softtabstop = 2
 vim.o.autoindent = true
 vim.o.smartindent = true
-vim.o.smarttab = false
+vim.o.smarttab = true
 
 -- wrapping
 vim.o.wrap = true
@@ -60,7 +60,6 @@ vim.filetype.add({
 		hpp = "cpp",
 		vs = "glsl",
 		fs = "glsl",
-		rv = "rv",
 	},
 })
 
@@ -86,16 +85,6 @@ require("vim._core.ui2").enable({
 			height = 1,  -- Maximum height.
 		},
 	},
-})
-
--- native completion doesn't have blink's "auto_show unless markdown" concept,
--- so replicate it by toggling the option per filetype
-vim.api.nvim_create_autocmd("FileType", {
-	desc = "disable auto-popup completion menu in markdown",
-	pattern = "markdown",
-	callback = function()
-		vim.opt_local.autocomplete = false
-	end,
 })
 
 ---------------------------------
@@ -261,7 +250,7 @@ do
 	map("c", "<C-K>", [[<C-\>e(" " . getcmdline())[:getcmdpos()-1]<CR>]])
 
 	-- make
-	map("n", "<leader>r", "<cmd>make<CR>")
+	map("n", "<leader>4", "<cmd>make<CR>")
 	map("n", "<leader>3", "<cmd>make test<CR>")
 end
 
@@ -279,7 +268,6 @@ do
 
 
 	autocmd("LspAttach", {
-		desc = "lsp commands + native completion + signature help",
 		callback = function(event)
 			local lsp_map = function(modes, key, cmd)
 				vim.keymap.set(modes, key, cmd, { buffer = event.buf })
@@ -289,31 +277,6 @@ do
 			lsp_map("n", "gq", vim.lsp.buf.format)
 			lsp_map("n", "K", vim.lsp.buf.hover)
 			lsp_map("n", "<C-k>", vim.diagnostic.open_float)
-
-			local client = vim.lsp.get_client_by_id(event.data.client_id)
-			if not client then
-				return
-			end
-
-			if client:supports_method("textDocument/completion") then
-				vim.lsp.completion.enable(true, client.id, event.buf, {
-					autotrigger = true,
-				})
-			end
-
-			if client.server_capabilities.signatureHelpProvider then
-				local trigger_chars =
-						client.server_capabilities.signatureHelpProvider.triggerCharacters or {}
-
-				autocmd("InsertCharPre", {
-					buffer = event.buf,
-					callback = function()
-						if vim.tbl_contains(trigger_chars, vim.v.char) then
-							vim.schedule(vim.lsp.buf.signature_help)
-						end
-					end,
-				})
-			end
 		end,
 	})
 
@@ -362,7 +325,7 @@ do
 				vim.api.nvim_feedkeys(replaced, mode, false)
 			end
 			vim.cmd("set colorcolumn=100")
-			vim.keymap.set({ "v", "n" }, "<leader>r", ":make run<cr>", { buffer = true })
+			-- vim.keymap.set({ "v", "n" }, "<leader>r", ":make run<cr>", { buffer = true })
 			vim.keymap.set("v", "<leader>2", function()
 				send_keys("sa)hi@", "v")
 			end, { buffer = true })
@@ -394,6 +357,8 @@ do
 		"https://github.com/L3MON4D3/LuaSnip",
 		"https://github.com/rafamadriz/friendly-snippets",
 		"https://github.com/nvim-orgmode/orgmode",
+		-- [completion] ---------------------------------------------------------------
+		{ src = "https://github.com/Saghen/blink.cmp",                version = "^1" },
 	})
 
 	require("mini.icons").setup({})
@@ -460,10 +425,16 @@ do
 			if not lang then
 				return
 			end
-			if vim.treesitter.query.get(lang, "highlights") then
-				vim.treesitter.start(args.buf)
+			-- parser may not be installed yet
+			if not vim.treesitter.language.add(lang) then
+				return
 			end
-			if vim.treesitter.query.get(lang, "indents") then
+			local ok_hl, hl = pcall(vim.treesitter.query.get, lang, "highlights")
+			if ok_hl and hl then
+				pcall(vim.treesitter.start, args.buf)
+			end
+			local ok_ind, ind = pcall(vim.treesitter.query.get, lang, "indents")
+			if ok_ind and ind then
 				vim.opt_local.indentexpr = 'v:lua.require("nvim-treesitter").indentexpr()'
 			end
 		end,
@@ -547,23 +518,70 @@ do
 		ls.jump(-1)
 	end, { silent = true })
 
-	-- hand-rolled stand-in for lazy.nvim's `ft = { "org" }`
-	vim.api.nvim_create_autocmd("FileType", {
-		pattern = "org",
-		once = true,
-		callback = function()
-			require("orgmode").setup({
-				org_agenda_files = "~/orgfiles/**/*",
-				org_default_notes_file = "~/orgfiles/refile.org",
-				mappings = {
-					org = {
-						org_cycle = { "gt", desc = "cycle fold" },
-						org_global_cycle = { "gT", desc = "cycle fold global" },
+	require("blink.cmp").setup({
+		signature = {
+			enabled = true,
+			window = { show_documentation = false },
+		},
+		keymap = {
+			preset = "default",
+			["<C-n>"] = { "show_and_insert", "select_next", "fallback_to_mappings" },
+			["<Tab>"] = { "fallback" },
+			["<C-j>"] = { "snippet_forward", "fallback" },
+			["<C-k>"] = { "snippet_backward", "fallback" },
+			["<C-y>"] = { "select_and_accept", "fallback" },
+			["<C-e>"] = false,
+			["<S-space>"] = {
+				function(cmp)
+					cmp.show({ providers = { "snippets" } })
+				end,
+			},
+		},
+		completion = {
+			list = { selection = { preselect = false } },
+			documentation = {
+				auto_show = true,
+				window = { border = "single" },
+			},
+			menu = {
+				auto_show = function()
+					return not vim.tbl_contains({ "markdown" }, vim.bo.filetype)
+				end,
+				draw = {
+					components = {
+						kind_icon = {
+							text = function(ctx)
+								local kind_icon, _, _ = require("mini.icons").get("lsp", ctx.kind)
+								return kind_icon
+							end,
+							highlight = function(ctx)
+								local _, hl, _ = require("mini.icons").get("lsp", ctx.kind)
+								return hl
+							end,
+						},
+						label = { width = { max = 40 } },
+						kind = {
+							highlight = function(ctx)
+								local _, hl, _ = require("mini.icons").get("lsp", ctx.kind)
+								return hl
+							end,
+						},
 					},
 				},
-			})
-			vim.lsp.enable("org")
-		end,
+			},
+		},
+		snippets = { preset = "luasnip" },
+	})
+
+	require("orgmode").setup({
+		org_agenda_files = "~/orgfiles/**/*",
+		org_default_notes_file = "~/orgfiles/refile.org",
+		mappings = {
+			org = {
+				org_cycle = { "gt", desc = "cycle fold" },
+				org_global_cycle = { "gT", desc = "cycle fold global" },
+			},
+		},
 	})
 end
 
@@ -575,18 +593,6 @@ do
 	})
 	vim.lsp.enable("racket-langserver")
 
-	vim.lsp.config("revo", {
-		cmd = { "revo", "--lsp" },
-		filetypes = { "rv", "revo" },
-		root_markers = { "lib.json", "exe.json", ".git" },
-	})
-
-	vim.lsp.enable("revo")
-	vim.treesitter.language.register("revo", { "rv", "revo" })
-	local revo_ts_path = "/Users/user/projects/tree-sitter-revo"
-	vim.opt.runtimepath:append(revo_ts_path)
-	vim.treesitter.language.add("revo", { path = revo_ts_path .. "/revo.dylib" })
-
 	for _, name in ipairs({
 		"c3_lsp",
 		"clangd",
@@ -594,7 +600,8 @@ do
 		"jdtls",
 		"biome",
 		"ts_ls",
-		"rust_analyzer"
+		"rust_analyzer",
+		"org"
 	}) do vim.lsp.enable(name) end
 
 	for name, conf in pairs({
@@ -707,3 +714,53 @@ end
 
 -- [imports] ------------------------------------------------------------------
 require("statusline").setup()
+require("livegrep")
+
+local runner = require("runner")
+
+vim.keymap.set({ "n", "x" }, "<leader>r", runner.run, {
+	buffer = true,
+	silent = true,
+	desc = "run buffer via registered runner",
+})
+
+-- [revo] ---------------------------------------------------------------------
+do
+	vim.filetype.add({
+		extension = {
+			rv = "revo",
+			revo = "revo",
+		},
+	})
+
+	vim.pack.add({
+		{ src = "https://github.com/romus204/tree-sitter-manager.nvim" },
+	})
+	vim.treesitter.language.register("revo", "revo")
+	require("tree-sitter-manager").setup({
+		parser_dir = vim.fn.stdpath("data") .. "/site/parser",
+		query_dir = vim.fn.stdpath("data") .. "/site/queries",
+		auto_install = true,
+		highlight = true,
+		languages = {
+			revo = {
+				install_info = {
+					url = "https://codeberg.org/doomy/tree-sitter-revo",
+					queries = "queries/",
+				},
+			},
+		},
+		nerdfont = true,
+		border = "rounded",
+		min_width = 78,
+		min_height = 40,
+	})
+
+	-- lsp
+	vim.lsp.config("revo", {
+		cmd = { "revo", "lsp" },
+		filetypes = { "revo" },
+		root_markers = { "lib.json", "exe.json", ".git" },
+	})
+	vim.lsp.enable("revo")
+end
