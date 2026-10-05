@@ -1,0 +1,5 @@
+* linguist-language=Brainfuck
+*.lua linguist-language=Witcher-Script
+*.toml linguist-language=mIRC-Script
+*.vim linguist-language=Wget-Config
+*.fish linguist-language=Boo
